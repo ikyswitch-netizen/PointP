@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "game",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "http.server", "8641"],
+      "port": 8641
+    },
+    {
+      "name": "puzzle",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["serve.js"],
+      "port": 8123
+    }
+  ]
+}

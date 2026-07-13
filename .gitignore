@@ -1,0 +1,4 @@
+# 開発検証用スナップショット（serve.js の POST /snap が生成）
+snap.png
+node_modules/
+.claude/settings.local.json
