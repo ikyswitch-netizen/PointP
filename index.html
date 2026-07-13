@@ -6,11 +6,16 @@
 <title>Torus Loops — 辺整合パズル</title>
 <style>
   * { box-sizing: border-box; }
-  body { margin: 0; background: #0f131b; color: #dce3f0; font-family: system-ui, "Segoe UI", "Hiragino Sans", "Yu Gothic UI", sans-serif; overflow: hidden; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; background: #0f131b; color: #dce3f0;
+    font-family: system-ui, "Segoe UI", "Hiragino Sans", "Yu Gothic UI", sans-serif;
+    overflow: hidden; display: flex; flex-direction: column;
+  }
   header {
     display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
     padding: 8px 14px; background: #151b27; border-bottom: 1px solid #232c3d;
-    min-height: 48px;
+    min-height: 48px; flex: none;
   }
   h1 { font-size: 16px; margin: 0 6px 0 0; font-weight: 700; letter-spacing: 0.04em; color: #8fb4ff; white-space: nowrap; }
   label { font-size: 12.5px; color: #9aa7bd; display: inline-flex; align-items: center; gap: 4px; }
@@ -19,10 +24,23 @@
     padding: 4px 8px; font-size: 12.5px; cursor: pointer;
   }
   select:hover, button:hover { background: #2a3550; }
-  button:disabled { opacity: 0.45; cursor: default; }
+  button:disabled { opacity: 0.4; cursor: default; }
   #newBtn { background: #2b4a7a; border-color: #3d63a0; }
   #newBtn:hover { background: #35598f; }
   #status { font-size: 12px; color: #8b98b0; margin-left: auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #stagebar {
+    display: flex; align-items: center; gap: 10px; flex: none;
+    padding: 7px 14px; background: #10151f; border-bottom: 1px solid #1e2635;
+    font-size: 12.5px;
+  }
+  #stageLabel { font-weight: 700; color: #cfe0ff; white-space: nowrap; }
+  #lesson { color: #93a1ba; line-height: 1.5; flex: 1; min-width: 0; }
+  #nextStageBtn {
+    background: #7a5a1f; border-color: #b98a2e; color: #ffe9b8; font-weight: 700;
+    white-space: nowrap; animation: pulse 1.2s ease-in-out infinite;
+  }
+  #nextStageBtn:hover { background: #91691f; }
+  @keyframes pulse { 50% { box-shadow: 0 0 10px rgba(255,205,110,0.55); } }
   details { position: relative; }
   details > summary { list-style: none; cursor: pointer; font-size: 12.5px; color: #9aa7bd; border: 1px solid #33405a; border-radius: 6px; padding: 4px 8px; background: #202839; }
   details[open] > summary { background: #2a3550; }
@@ -32,16 +50,20 @@
     font-size: 12.5px; line-height: 1.75; color: #b9c4d8; box-shadow: 0 8px 30px rgba(0,0,0,.5);
   }
   details b { color: #dce3f0; }
-  #cv { display: block; width: 100vw; height: calc(100vh - 49px); touch-action: none; }
+  #cv { display: block; width: 100vw; flex: 1; min-height: 0; touch-action: none; }
 </style>
 </head>
 <body>
 <header>
   <h1>TORUS LOOPS</h1>
+  <select id="mode">
+    <option value="stage">ステージ</option>
+    <option value="free">フリー</option>
+  </select>
   <label>盤
-    <select id="rows"><option>3</option><option selected>4</option><option>5</option><option>6</option></select>
+    <select id="rows"><option>2</option><option>3</option><option selected>4</option><option>5</option><option>6</option></select>
     ×
-    <select id="cols"><option>3</option><option selected>4</option><option>5</option><option>6</option></select>
+    <select id="cols"><option>2</option><option>3</option><option selected>4</option><option>5</option><option>6</option></select>
   </label>
   <label>色
     <select id="colors">
@@ -59,14 +81,24 @@
     <div>
       <b>ドラッグ</b>で配置、<b>クリック</b>で 90° 回転。<br>
       盤は<b>トーラス</b>（上下・左右がループ）。外周の薄い縁は反対側の写し身で、そこにドロップすると回り込んで置けます。<br>
-      各ピースの色付きの点は「中心 ↔ 辺」を往復しています。隣どうし正しく置けると、継ぎ目をまたいで点の流れが<b>連続</b>して見えます（片方が出るとき、もう片方が入る）。ズレていると継ぎ目で点が衝突・断絶します。<br>
+      色付きの点は「自分の中心 ↔ 隣のタイルの中心」を往復しようとしますが、自分のタイルの中でしか見えません。
+      隣が正しければ、継ぎ目の向こうで<b>相手の点が続きを引き継ぎ</b>、1つの点が行き来しているように見えます。
+      点が継ぎ目で消えたまま帰らない・ぶつかって消える・色が変わるなら、その継ぎ目は間違い。<br>
       すべての継ぎ目（回り込み含む）が整合したらクリア。<b>盤全体の平行移動・回転も正解</b>扱いです。
     </div>
   </details>
   <span id="status"></span>
 </header>
+<div id="stagebar">
+  <button id="stagePrev">◀</button>
+  <span id="stageLabel"></span>
+  <button id="stageNext">▶</button>
+  <span id="lesson"></span>
+  <button id="nextStageBtn" style="display:none">次のステージへ ▶</button>
+</div>
 <canvas id="cv"></canvas>
 <script src="engine.js"></script>
+<script src="stages.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

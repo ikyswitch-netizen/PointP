@@ -1,30 +1,49 @@
-/* Torus Loops — GUI（Canvas 描画・ドラッグ&ドロップ・回転・クリア判定） */
+/* Torus Loops — GUI（Canvas 描画・ドラッグ&ドロップ・回転・クリア判定・ステージ制） */
 (function () {
   'use strict';
   const E = window.TorusEngine;
+  const STAGES = window.TorusStages;
   const cv = document.getElementById('cv');
   const ctx = cv.getContext('2d');
   const $ = (id) => document.getElementById(id);
   const statusEl = $('status');
   const rowsSel = $('rows'), colsSel = $('cols'), colorsSel = $('colors');
+  const modeSel = $('mode');
   const newBtn = $('newBtn'), resetBtn = $('resetBtn'), peekBtn = $('peekBtn'), solveBtn = $('solveBtn');
+  const stageBar = $('stagebar');
+  const stagePrevBtn = $('stagePrev'), stageNextBtn = $('stageNext');
+  const stageLabel = $('stageLabel'), lessonEl = $('lesson'), nextStageBtn = $('nextStageBtn');
 
   const PALETTE = ['#ff5d5d', '#ffb020', '#3ddc84', '#41b0ff', '#b18cff', '#ff6ad5', '#ffe66d', '#2de1c2'];
   const DIR = [[0, -1], [1, 0], [0, 1], [-1, 0]]; // N,E,S,W（ローカル）
-  const PERIOD = 2.6; // 点の往復周期（秒）
+  const PERIOD = 3.0; // 中心→隣の中心→中心 の1往復（秒）
+  const LS = { mode: 'torusloops.mode', stage: 'torusloops.stage', unlocked: 'torusloops.unlocked' };
+
+  function lsGet(k, def) { try { const v = localStorage.getItem(k); return v === null ? def : v; } catch (_) { return def; } }
+  function lsSet(k, v) { try { localStorage.setItem(k, String(v)); } catch (_) { /* ignore */ } }
 
   const state = {
     m: 4, n: 4, K: 4,
+    mode: lsGet(LS.mode, 'stage') === 'free' ? 'free' : 'stage',
+    stageIdx: 0,
     puzzle: null,
     pieces: [],        // {id, edges, rot, dispRot, loc:{kind:'cell'|'tray'|'drag', idx}, x,y,size}
     generating: false,
     solving: false,
+    solverUsed: false,
     cleared: false,
     clearedAt: 0,
     peek: false,
     drag: null,
     time: 0,
   };
+  function unlocked() {
+    const v = parseInt(lsGet(LS.unlocked, '0'), 10);
+    return isNaN(v) ? 0 : Math.min(v, STAGES.length - 1);
+  }
+  state.stageIdx = Math.min(
+    Math.max(0, parseInt(lsGet(LS.stage, '0'), 10) || 0),
+    unlocked());
   let L = null; // layout cache
 
   // ---------- layout ----------
@@ -71,6 +90,10 @@
     if (p.loc.kind === 'tray') { const q = slotCenter(p.loc.idx); return { x: q.x, y: q.y, size: L.st * 0.88 }; }
     return { x: p.x, y: p.y, size: L.s * 0.98 };
   }
+  // 点の振幅の基準となるマス間隔（中心→継ぎ目 = pitch/2）
+  function pitchOf(p) {
+    return p.loc.kind === 'tray' ? L.st : L.s;
+  }
 
   // ---------- pieces ----------
   function pieceInCell(cell) {
@@ -102,17 +125,22 @@
       if (p.loc.kind === 'cell') { occ[p.loc.idx] = p; placed++; }
     }
     state.cleared = false;
-    if (placed < N) { setStatus(); return; }
-    const gp = [], gr = [];
-    for (let i = 0; i < N; i++) { gp.push(occ[i].id); gr.push(occ[i].rot); }
-    if (E.checkBoard(state.puzzle.pieces, m, n, gp, gr).length === 0) {
-      state.cleared = true;
-      state.clearedAt = state.time;
+    if (placed === N) {
+      const gp = [], gr = [];
+      for (let i = 0; i < N; i++) { gp.push(occ[i].id); gr.push(occ[i].rot); }
+      if (E.checkBoard(state.puzzle.pieces, m, n, gp, gr).length === 0) {
+        state.cleared = true;
+        state.clearedAt = state.time;
+        if (state.mode === 'stage' && !state.solverUsed) {
+          if (state.stageIdx + 1 > unlocked()) lsSet(LS.unlocked, state.stageIdx + 1);
+        }
+      }
     }
+    updateStageUI();
     setStatus();
   }
 
-  // ---------- status ----------
+  // ---------- status / stage UI ----------
   function setStatus(msg) {
     if (msg !== undefined) { statusEl.textContent = msg; return; }
     const p = state.puzzle;
@@ -122,26 +150,65 @@
       `盤 ${p.m}×${p.n} ／ 色 ${p.K} ／ 空白辺 ${st.blankSeams}/${st.totalSeams}` +
       ` ／ 一意解${st.unique ? '検証済み✓' : '未確定'}` +
       (st.locallyMinimal ? '・局所極小' : '') +
-      ` ／ seed ${p.seed}` +
+      (state.mode === 'free' ? ` ／ seed ${p.seed}` : '') +
       (state.cleared ? ' ／ 🎉 CLEAR!' : '');
+  }
+  function updateModeUI() {
+    const stage = state.mode === 'stage';
+    modeSel.value = state.mode;
+    for (const el of [rowsSel, colsSel, colorsSel, newBtn]) {
+      el.parentElement.tagName === 'LABEL'
+        ? (el.parentElement.style.display = stage ? 'none' : '')
+        : (el.style.display = stage ? 'none' : '');
+    }
+    stageBar.style.display = stage ? '' : 'none';
+    updateStageUI();
+  }
+  function updateStageUI() {
+    if (state.mode !== 'stage') return;
+    const i = state.stageIdx, stg = STAGES[i];
+    stageLabel.textContent = `Stage ${i + 1}/${STAGES.length}　${stg.title}`;
+    lessonEl.textContent = stg.lesson;
+    stagePrevBtn.disabled = i <= 0;
+    const nextOk = i + 1 < STAGES.length && i + 1 <= unlocked();
+    stageNextBtn.disabled = !nextOk;
+    nextStageBtn.style.display = (state.cleared && nextOk) ? '' : 'none';
+  }
+  function gotoStage(i) {
+    state.stageIdx = Math.max(0, Math.min(i, STAGES.length - 1, unlocked()));
+    lsSet(LS.stage, state.stageIdx);
+    regenerate();
   }
 
   // ---------- 生成 ----------
+  let regenQueued = false;
   function regenerate() {
-    if (state.generating) return;
+    // 生成中の再要求は捨てずに、完了後に最新の設定で作り直す
+    if (state.generating) { regenQueued = true; return; }
     state.generating = true;
     state.cleared = false;
     state.solving = false;
+    state.solverUsed = false;
     state.peek = false;
     peekBtn.textContent = '答え';
     state.pieces = [];
     state.puzzle = null;
-    state.m = +rowsSel.value;
-    state.n = +colsSel.value;
-    const kv = colorsSel.value;
-    state.K = kv === 'auto' ? E.defaultK(state.m, state.n) : +kv;
-    const seed = (Math.random() * 0xffffffff) >>> 0;
-    const it = E.generateSteps(state.m, state.n, state.K, seed, {});
+    let seed, genOpts;
+    if (state.mode === 'stage') {
+      const stg = STAGES[state.stageIdx];
+      state.m = stg.m; state.n = stg.n; state.K = stg.K;
+      seed = stg.seed;
+      genOpts = stg.gen || {};
+    } else {
+      state.m = +rowsSel.value;
+      state.n = +colsSel.value;
+      const kv = colorsSel.value;
+      state.K = kv === 'auto' ? E.defaultK(state.m, state.n) : +kv;
+      seed = (Math.random() * 0xffffffff) >>> 0;
+      genOpts = {};
+    }
+    updateModeUI();
+    const it = E.generateSteps(state.m, state.n, state.K, seed, genOpts);
     setStatus('生成中…');
     function pump() {
       // タブ非表示中はタイマーが間引かれるので、1回あたり大きめに進める
@@ -152,6 +219,7 @@
         do { r = it.next(); } while (!r.done && performance.now() - t0 < chunkMs);
       } catch (err) {
         state.generating = false;
+        if (regenQueued) { regenQueued = false; setTimeout(regenerate, 0); return; }
         setStatus('生成失敗: ' + err.message);
         return;
       }
@@ -176,6 +244,8 @@
         p.dispRot = p.rot;
       }
       state.generating = false;
+      if (regenQueued) { regenQueued = false; setTimeout(regenerate, 0); return; }
+      updateStageUI();
       setStatus();
     }
     setTimeout(pump, 0);
@@ -186,6 +256,7 @@
     if (state.generating || state.solving || !state.puzzle) return;
     state.cleared = false;
     state.solving = true;
+    state.solverUsed = true;
     setStatus('ソルバー実行中…');
     setTimeout(() => {
       const res = E.countSolutions(state.puzzle.pieces, state.m, state.n, { maxCount: 1, nodeCap: 8e6 });
@@ -258,9 +329,9 @@
     const o = L.outer, m = state.m, n = state.n, N = m * n;
     if (x >= o.x && x < o.x + o.w && y >= o.y && y < o.y + o.h) {
       // トーラスなので外周マージンへのドロップは反対側に回り込む
-      let rr = Math.floor((y - L.by) / L.s), cc = Math.floor((x - L.bx) / L.s);
-      rr = ((rr % m) + m) % m; cc = ((cc % n) + n) % n;
-      const cell = rr * n + cc;
+      let rr_ = Math.floor((y - L.by) / L.s), cc = Math.floor((x - L.bx) / L.s);
+      rr_ = ((rr_ % m) + m) % m; cc = ((cc % n) + n) % n;
+      const cell = rr_ * n + cc;
       const occ = pieceInCell(cell);
       if (occ && occ !== p) occ.loc = { ...d.from };
       p.loc = { kind: 'cell', idx: cell };
@@ -298,24 +369,8 @@
     c.closePath();
   }
 
-  function drawChevron(cx, cy, dx, dy, dir, size, col, alpha) {
-    const o = dir === 0 ? 1 : -1; // out: 外向き / in: 内向き
-    const len = size * 0.07;
-    const tx = cx + dx * o * len, ty = cy + dy * o * len;
-    const px = -dy, py = dx;
-    ctx.globalAlpha = alpha;
-    ctx.strokeStyle = col;
-    ctx.lineWidth = Math.max(1.5, size * 0.028);
-    ctx.lineCap = 'round';
-    ctx.beginPath();
-    ctx.moveTo(tx - dx * o * len * 1.5 + px * len, ty - dy * o * len * 1.5 + py * len);
-    ctx.lineTo(tx, ty);
-    ctx.lineTo(tx - dx * o * len * 1.5 - px * len, ty - dy * o * len * 1.5 - py * len);
-    ctx.stroke();
-  }
-
-  // p: {edges, dispRot} を (x,y) に size で描く
-  function drawPiece(x, y, size, p, alpha, glow, elevated) {
+  // 盤・ハブのみ（点は drawPieceDots で後から重ねる）
+  function drawPieceBody(x, y, size, p, alpha, elevated) {
     ctx.save();
     ctx.translate(x, y);
     ctx.rotate(p.dispRot * Math.PI / 2);
@@ -333,41 +388,40 @@
     ctx.strokeStyle = 'rgba(255,255,255,0.08)';
     ctx.lineWidth = 1;
     ctx.stroke();
-    const ph = 2 * Math.PI * (state.time / PERIOD);
-    for (let d = 0; d < 4; d++) {
-      const v = p.edges[d];
-      if (!v) continue;
-      const col = PALETTE[E.edgeColor(v) % PALETTE.length];
-      const dir = E.edgeDir(v); // 0=out, 1=in
-      const dx = DIR[d][0], dy = DIR[d][1];
-      const ex = dx * (h - 1), ey = dy * (h - 1);
-      // 軌道
-      ctx.globalAlpha = alpha * 0.26;
-      ctx.strokeStyle = col;
-      ctx.lineWidth = Math.max(2, size * 0.05);
-      ctx.lineCap = 'round';
-      ctx.beginPath();
-      ctx.moveTo(0, 0);
-      ctx.lineTo(ex, ey);
-      ctx.stroke();
-      // out/in の静的ヒント（外向き / 内向きの山括弧）
-      drawChevron(ex * 0.62, ey * 0.62, dx, dy, dir, size, col, alpha * 0.5);
-      // 往復する点: out は t=0 で中心、in は t=0 で辺（位相が半周期ズレ）
-      const a = dir === 0 ? (1 - Math.cos(ph)) / 2 : (1 + Math.cos(ph)) / 2;
-      ctx.globalAlpha = alpha;
-      ctx.fillStyle = col;
-      if (glow) { ctx.shadowColor = col; ctx.shadowBlur = size * 0.16; }
-      ctx.beginPath();
-      ctx.arc(ex * a, ey * a, Math.max(2.5, size * 0.068), 0, 7);
-      ctx.fill();
-      ctx.shadowBlur = 0;
-    }
-    // 中心ハブ
     ctx.globalAlpha = alpha * 0.55;
     ctx.fillStyle = 'rgba(255,255,255,0.16)';
     ctx.beginPath();
     ctx.arc(0, 0, size * 0.07, 0, 7);
     ctx.fill();
+    ctx.restore();
+    ctx.globalAlpha = 1;
+  }
+
+  // 点: 自分の中心と「隣の中心」の間の単振動（振動中心 = 継ぎ目、振幅 = pitch/2）。
+  // 自タイル側（a<=1）にいる間だけ描く。正しい隣接では相手側の点が位相の続きを描くので
+  // 「中心 → 隣の中心 → 戻る」が1つの点の連続運動に見える。
+  function drawPieceDots(x, y, size, pitch, p, alpha, glow) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(p.dispRot * Math.PI / 2);
+    const reach = pitch / 2;
+    const ph = 2 * Math.PI * (state.time / PERIOD);
+    for (let d = 0; d < 4; d++) {
+      const v = p.edges[d];
+      if (!v) continue;
+      const dir = E.edgeDir(v); // 0=out, 1=in
+      // a: 0=自分の中心, 1=継ぎ目, 2=隣の中心
+      const a = dir === 0 ? (1 - Math.cos(ph)) : (1 + Math.cos(ph));
+      if (a > 1) continue; // タイル外（隣のテリトリー）では描かない
+      const col = PALETTE[E.edgeColor(v) % PALETTE.length];
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = col;
+      if (glow) { ctx.shadowColor = col; ctx.shadowBlur = size * 0.16; }
+      ctx.beginPath();
+      ctx.arc(DIR[d][0] * a * reach, DIR[d][1] * a * reach, Math.max(2.5, size * 0.068), 0, 7);
+      ctx.fill();
+      ctx.shadowBlur = 0;
+    }
     ctx.restore();
     ctx.globalAlpha = 1;
   }
@@ -424,30 +478,37 @@
       }
     }
 
-    // wrap ゴースト（マージンにはみ出す写し）
+    // wrap ゴースト（マージンにはみ出す写し）: 盤→点 の2パス
     ctx.save();
     ctx.beginPath();
     ctx.rect(o.x, o.y, o.w, o.h);
     ctx.clip();
+    const ghosts = [];
     for (const p of state.pieces) {
       if (p.loc.kind !== 'cell') continue;
       for (let dr = -1; dr <= 1; dr++) {
         for (let dc = -1; dc <= 1; dc++) {
           if (!dr && !dc) continue;
           const gx = p.x + dc * n * s, gy = p.y + dr * m * s;
-          if (gx + p.size / 2 < o.x || gx - p.size / 2 > o.x + o.w) continue;
-          if (gy + p.size / 2 < o.y || gy - p.size / 2 > o.y + o.h) continue;
-          drawPiece(gx, gy, p.size, p, 0.35, false, false);
+          if (gx + s < o.x || gx - s > o.x + o.w) continue;
+          if (gy + s < o.y || gy - s > o.y + o.h) continue;
+          ghosts.push({ gx, gy, p });
         }
       }
     }
+    for (const g of ghosts) drawPieceBody(g.gx, g.gy, g.p.size, g.p, 0.35, false);
+    for (const g of ghosts) drawPieceDots(g.gx, g.gy, g.p.size, s, g.p, 0.35, false);
     ctx.restore();
 
-    // ピース（ドラッグ中のものは最前面）
-    const order = [...state.pieces].sort(
-      (a, b) => (a.loc.kind === 'drag' ? 1 : 0) - (b.loc.kind === 'drag' ? 1 : 0));
-    for (const p of order) {
-      drawPiece(p.x, p.y, p.size, p, 1, true, p.loc.kind === 'drag');
+    // ピース: 全部の盤を描いてから全部の点を重ねる
+    // （点は継ぎ目を越えて描かれるので、後から描く隣の盤に隠されないように）
+    const still = [], drag = [];
+    for (const p of state.pieces) (p.loc.kind === 'drag' ? drag : still).push(p);
+    for (const p of still) drawPieceBody(p.x, p.y, p.size, p, 1, false);
+    for (const p of still) drawPieceDots(p.x, p.y, p.size, pitchOf(p), p, 1, true);
+    for (const p of drag) {
+      drawPieceBody(p.x, p.y, p.size, p, 1, true);
+      drawPieceDots(p.x, p.y, p.size, pitchOf(p), p, 1, true);
     }
 
     // 答えパネル
@@ -463,7 +524,7 @@
       ctx.stroke();
       const cx = bx + n * s / 2, cy = by + m * s / 2;
       ctx.fillStyle = 'rgba(10,13,20,0.72)';
-      rr(ctx, cx - 150, cy - 52, 300, 96, 14);
+      rr(ctx, cx - 160, cy - 52, 320, 96, 14);
       ctx.fill();
       ctx.textAlign = 'center';
       ctx.fillStyle = 'rgba(255,220,140,0.98)';
@@ -471,7 +532,13 @@
       ctx.fillText('CLEAR!', cx, cy);
       ctx.font = '500 13px system-ui';
       ctx.fillStyle = 'rgba(255,235,190,0.92)';
-      ctx.fillText('すべての継ぎ目が整合しました', cx, cy + 26);
+      let sub = 'すべての継ぎ目が整合しました';
+      if (state.mode === 'stage') {
+        if (state.solverUsed) sub = 'ソルバー使用のためステージ進行には数えません';
+        else if (state.stageIdx + 1 >= STAGES.length) sub = '全ステージ制覇！';
+        else sub = '次のステージが解放されました';
+      }
+      ctx.fillText(sub, cx, cy + 26);
       ctx.textAlign = 'start';
     }
 
@@ -497,12 +564,16 @@
     ctx.fillStyle = 'rgba(200,212,235,0.8)';
     ctx.font = '11px system-ui';
     ctx.fillText('答え（平行移動・回転も正解）', x + 10, y + 17);
+    const minis = [];
     for (let cell = 0; cell < m * n; cell++) {
       const r = (cell / n) | 0, c = cell % n;
-      drawPiece(
-        x + 12 + c * ps + ps / 2, y + 28 + r * ps + ps / 2, ps * 0.94,
-        { edges: state.puzzle.pieces[cell], dispRot: 0 }, 0.95, false, false);
+      minis.push({
+        x: x + 12 + c * ps + ps / 2, y: y + 28 + r * ps + ps / 2,
+        p: { edges: state.puzzle.pieces[cell], dispRot: 0 },
+      });
     }
+    for (const q of minis) drawPieceBody(q.x, q.y, ps * 0.94, q.p, 0.95, false);
+    for (const q of minis) drawPieceDots(q.x, q.y, ps * 0.94, ps, q.p, 0.95, false);
   }
 
   // ---------- main loop ----------
@@ -549,10 +620,20 @@
   rowsSel.addEventListener('change', regenerate);
   colsSel.addEventListener('change', regenerate);
   colorsSel.addEventListener('change', regenerate);
+  modeSel.addEventListener('change', () => {
+    state.mode = modeSel.value === 'free' ? 'free' : 'stage';
+    lsSet(LS.mode, state.mode);
+    regenerate();
+  });
+  stagePrevBtn.addEventListener('click', () => gotoStage(state.stageIdx - 1));
+  stageNextBtn.addEventListener('click', () => gotoStage(state.stageIdx + 1));
+  nextStageBtn.addEventListener('click', () => gotoStage(state.stageIdx + 1));
   resetBtn.addEventListener('click', () => {
     if (!state.puzzle || state.generating || state.solving) return;
     state.cleared = false;
+    state.solverUsed = false;
     scatterToTray(E.mulberry32((Math.random() * 0xffffffff) >>> 0));
+    updateStageUI();
     setStatus();
   });
   peekBtn.addEventListener('click', () => {
@@ -567,9 +648,11 @@
     layout: () => L,
     cellCenter, slotCenter,
     pieceInCell, pieceInSlot,
-    checkCleared,
+    checkCleared, gotoStage,
+    unlocked,
   };
 
+  updateModeUI();
   regenerate();
   scheduleFrame();
 })();

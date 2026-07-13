@@ -198,6 +198,8 @@
     const nodeCap = opts.nodeCap || 1500000;
     const passesMax = opts.passes || 6;
     const timeBudgetMs = opts.timeBudgetMs || 6000;
+    // 削る seam 本数の上限（ステージ用: 0 = 削らない, 未指定 = 無制限）
+    const maxRemove = ('maxRemove' in opts && opts.maxRemove != null) ? opts.maxRemove : Infinity;
     const rnd = mulberry32(seed >>> 0);
     const t0 = Date.now();
 
@@ -224,8 +226,8 @@
       for (let c = 0; c < n; c++) { seams.push(['H', r, c]); seams.push(['V', r, c]); }
     }
     const total = seams.length;
-    let removed = 0, carveChecks = 0, timeUp = false, converged = false;
-    for (let pass = 0; pass < passesMax && !timeUp; pass++) {
+    let removed = 0, carveChecks = 0, timeUp = false, converged = false, capReached = maxRemove <= 0;
+    for (let pass = 0; pass < passesMax && !timeUp && !capReached; pass++) {
       let changed = false;
       shuffle(seams, rnd);
       let idx = 0;
@@ -243,8 +245,9 @@
         if (res.completed && res.count === 1) { removed++; changed = true; }
         else grid[r][c] = old;
         yield { phase: 'carve', pass: pass + 1, done: idx, total, removed };
+        if (removed >= maxRemove) { capReached = true; break; }
       }
-      if (!changed && !timeUp) { converged = true; break; }
+      if (!changed && !timeUp && !capReached) { converged = true; break; }
     }
 
     pieces = buildPieces(m, n, H, V);

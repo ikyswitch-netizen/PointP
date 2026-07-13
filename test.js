@@ -47,7 +47,7 @@ console.log('== 割当て単位の厳密カウント ==');
 }
 
 console.log('== 生成器（各サイズ） ==');
-const sizes = [[3, 3], [4, 4], [3, 5], [5, 5], [6, 6]];
+const sizes = [[2, 4], [3, 3], [4, 4], [3, 5], [5, 5], [6, 6]];
 for (const [m, n] of sizes) {
   const K = E.defaultK(m, n);
   const N = m * n;
@@ -134,6 +134,27 @@ for (const [m, n] of sizes) {
     }
     ok(removable === 0, `局所極小: 残り ${checked} 本のどの seam も単独では消せない (removable=${removable})`);
   }
+}
+
+console.log('== ステージ（固定シード） ==');
+const STAGES = require('./stages.js');
+for (let i = 0; i < STAGES.length; i++) {
+  const st = STAGES[i];
+  const t0 = Date.now();
+  const puz = E.generateSync(st.m, st.n, st.K, st.seed, st.gen);
+  const ms = Date.now() - t0;
+  ok(puz.stats.unique,
+    `Stage${i + 1}「${st.title}」${st.m}×${st.n} K${st.K}: 一意 (空白 ${puz.stats.blankSeams}/${puz.stats.totalSeams}, ${ms}ms)`);
+  if (st.gen && st.gen.maxRemove !== undefined) {
+    ok(puz.stats.blankSeams <= st.gen.maxRemove, `Stage${i + 1}: 削り上限 (${st.gen.maxRemove}) 遵守`);
+  }
+  const N = st.m * st.n;
+  const gp = Array.from({ length: N }, (_, j) => j);
+  const gr = new Array(N).fill(0);
+  ok(E.checkBoard(puz.pieces, st.m, st.n, gp, gr).length === 0, `Stage${i + 1}: intended 解は全 seam 整合`);
+  const puz2 = E.generateSync(st.m, st.n, st.K, st.seed, st.gen);
+  ok(JSON.stringify(puz.H) === JSON.stringify(puz2.H) && JSON.stringify(puz.V) === JSON.stringify(puz2.V),
+    `Stage${i + 1}: 同シードで決定的`);
 }
 
 console.log(fails ? `\n${fails} 件の失敗` : '\n全テスト成功');
