@@ -17,7 +17,7 @@
   const PALETTE = ['#ff5d5d', '#ffb020', '#3ddc84', '#41b0ff', '#b18cff', '#ff6ad5', '#ffe66d', '#2de1c2'];
   const DIR = [[0, -1], [1, 0], [0, 1], [-1, 0]]; // N,E,S,W（ローカル）
   const PERIOD = 3.0; // 中心→隣の中心→中心 の1往復（秒）
-  const LS = { mode: 'torusloops.mode', stage: 'torusloops.stage', unlocked: 'torusloops.unlocked' };
+  const LS = { mode: 'torusloops.mode', stage: 'torusloops.stage.v2', unlocked: 'torusloops.unlocked.v2' };
 
   function lsGet(k, def) { try { const v = localStorage.getItem(k); return v === null ? def : v; } catch (_) { return def; } }
   function lsSet(k, v) { try { localStorage.setItem(k, String(v)); } catch (_) { /* ignore */ } }
@@ -36,6 +36,7 @@
     peek: false,
     drag: null,
     time: 0,
+    trayN: null, // トレイのスロット数（= 固定されていないピースの数）
   };
   function unlocked() {
     const v = parseInt(lsGet(LS.unlocked, '0'), 10);
@@ -63,18 +64,19 @@
     const s = Math.max(30, Math.min((bW - 2 * pad) / (n + 1), (bH - 2 * pad) / (m + 1), 120));
     const bx = bX + (bW - s * n) / 2;
     const by = bY + (bH - s * m) / 2;
+    const tN = Math.max(1, state.trayN != null ? state.trayN : N);
     let st = Math.min(s * 0.8, 84);
     let cols = Math.max(1, Math.floor((tW - 2 * pad) / st));
-    let rows = Math.ceil(N / cols);
+    let rows = Math.ceil(tN / cols);
     while (rows * st > tH - 2 * pad - 20 && st > 26) {
       st *= 0.92;
       cols = Math.max(1, Math.floor((tW - 2 * pad) / st));
-      rows = Math.ceil(N / cols);
+      rows = Math.ceil(tN / cols);
     }
     const tx = tX + (tW - cols * st) / 2;
     const ty = tY + Math.max(pad + 14, (tH - rows * st) / 2);
     return {
-      W, H, s, bx, by, st, cols, rows, tx, ty,
+      W, H, s, bx, by, st, cols, rows, tx, ty, trayN: tN,
       outer: { x: bx - s / 2, y: by - s / 2, w: n * s + s, h: m * s + s },
     };
   }
@@ -105,9 +107,12 @@
     return null;
   }
   function scatterToTray(rnd) {
-    const idx = state.pieces.map((_, i) => i);
-    E.shuffle(idx, rnd);
-    idx.forEach((pi, slot) => {
+    const free = [];
+    for (let i = 0; i < state.pieces.length; i++) {
+      if (!state.pieces[i].locked) free.push(i);
+    }
+    E.shuffle(free, rnd);
+    free.forEach((pi, slot) => {
       const p = state.pieces[pi];
       p.loc = { kind: 'tray', idx: slot };
       const r = Math.floor(rnd() * 4);
@@ -167,7 +172,8 @@
   function updateStageUI() {
     if (state.mode !== 'stage') return;
     const i = state.stageIdx, stg = STAGES[i];
-    stageLabel.textContent = `Stage ${i + 1}/${STAGES.length}　${stg.title}`;
+    const done = i < unlocked();
+    stageLabel.textContent = `Stage ${i + 1}/${STAGES.length}${done ? ' ✓' : ''}　${stg.title}`;
     lessonEl.textContent = stg.lesson;
     stagePrevBtn.disabled = i <= 0;
     const nextOk = i + 1 < STAGES.length && i + 1 <= unlocked();
@@ -182,6 +188,29 @@
 
   // ---------- 生成 ----------
   let regenQueued = false;
+  // 生成 or 手作り面のパズルを盤に据え付ける（locked セルは盤上に固定）
+  function installPuzzle(puzzle, scrambleSeed) {
+    state.puzzle = puzzle;
+    const lockedSet = new Set(puzzle.locked || []);
+    state.pieces = puzzle.pieces.map((edges, i) => ({
+      id: i, edges, rot: 0, dispRot: 0,
+      locked: lockedSet.has(i),
+      loc: lockedSet.has(i) ? { kind: 'cell', idx: i } : { kind: 'tray', idx: i },
+      x: 0, y: 0, size: 10,
+    }));
+    state.trayN = state.pieces.length - lockedSet.size;
+    scatterToTray(E.mulberry32(scrambleSeed >>> 0));
+    L = layout();
+    for (const p of state.pieces) {
+      const t = targetOf(p);
+      p.x = t.x; p.y = t.y; p.size = t.size;
+      p.dispRot = p.rot;
+    }
+    state.generating = false;
+    if (regenQueued) { regenQueued = false; setTimeout(regenerate, 0); return; }
+    updateStageUI();
+    setStatus();
+  }
   function regenerate() {
     // 生成中の再要求は捨てずに、完了後に最新の設定で作り直す
     if (state.generating) { regenQueued = true; return; }
@@ -193,10 +222,17 @@
     peekBtn.textContent = '答え';
     state.pieces = [];
     state.puzzle = null;
+    state.trayN = null;
     let seed, genOpts;
     if (state.mode === 'stage') {
       const stg = STAGES[state.stageIdx];
       state.m = stg.m; state.n = stg.n; state.K = stg.K;
+      updateModeUI();
+      if (stg.type === 'design') {
+        // 手作り面: 生成不要。スクランブルもステージごとに決定的
+        installPuzzle(E.puzzleFromDesign(stg), 0xC0FFEE ^ (state.stageIdx * 2654435761));
+        return;
+      }
       seed = stg.seed;
       genOpts = stg.gen || {};
     } else {
@@ -206,8 +242,8 @@
       state.K = kv === 'auto' ? E.defaultK(state.m, state.n) : +kv;
       seed = (Math.random() * 0xffffffff) >>> 0;
       genOpts = {};
+      updateModeUI();
     }
-    updateModeUI();
     const it = E.generateSteps(state.m, state.n, state.K, seed, genOpts);
     setStatus('生成中…');
     function pump() {
@@ -230,23 +266,7 @@
         setTimeout(pump, 0);
         return;
       }
-      const puzzle = r.value;
-      state.puzzle = puzzle;
-      state.pieces = puzzle.pieces.map((edges, i) => ({
-        id: i, edges, rot: 0, dispRot: 0,
-        loc: { kind: 'tray', idx: i }, x: 0, y: 0, size: 10,
-      }));
-      scatterToTray(E.mulberry32(seed ^ 0x9e3779b9));
-      L = layout();
-      for (const p of state.pieces) {
-        const t = targetOf(p);
-        p.x = t.x; p.y = t.y; p.size = t.size;
-        p.dispRot = p.rot;
-      }
-      state.generating = false;
-      if (regenQueued) { regenQueued = false; setTimeout(regenerate, 0); return; }
-      updateStageUI();
-      setStatus();
+      installPuzzle(r.value, seed ^ 0x9e3779b9);
     }
     setTimeout(pump, 0);
   }
@@ -259,13 +279,21 @@
     state.solverUsed = true;
     setStatus('ソルバー実行中…');
     setTimeout(() => {
-      const res = E.countSolutions(state.puzzle.pieces, state.m, state.n, { maxCount: 1, nodeCap: 8e6 });
+      // 固定ピースがあるステージでは、その配置を前提に解く
+      const fixed = state.pieces
+        .filter((p) => p.locked && p.loc.kind === 'cell')
+        .map((p) => ({ cell: p.loc.idx, piece: p.id, rot: 0 }));
+      const opts = { maxCount: 1, nodeCap: 8e6 };
+      if (fixed.length) opts.fixed = fixed;
+      const res = E.countSolutions(state.puzzle.pieces, state.m, state.n, opts);
       if (res.count < 1) { state.solving = false; setStatus('解が見つかりませんでした'); return; }
       const sol = res.solutions[0];
-      state.pieces.forEach((p, i) => { p.loc = { kind: 'tray', idx: i }; });
+      let slot = 0;
+      state.pieces.forEach((p) => { if (!p.locked) p.loc = { kind: 'tray', idx: slot++ }; });
       const N = state.m * state.n;
       let i = 0;
       const timer = setInterval(() => {
+        while (i < N && state.pieces[sol.gp[i]].locked) i++; // 固定ピースは既に盤上
         if (i >= N) {
           clearInterval(timer);
           state.solving = false;
@@ -288,6 +316,7 @@
   function pieceAt(x, y) {
     let best = null;
     for (const p of state.pieces) {
+      if (p.locked) continue;
       const h = p.size / 2;
       if (Math.abs(x - p.x) <= h && Math.abs(y - p.y) <= h) best = p;
     }
@@ -333,6 +362,7 @@
       rr_ = ((rr_ % m) + m) % m; cc = ((cc % n) + n) % n;
       const cell = rr_ * n + cc;
       const occ = pieceInCell(cell);
+      if (occ && occ.locked) { p.loc = { ...d.from }; return; } // 固定ピースは動かせない
       if (occ && occ !== p) occ.loc = { ...d.from };
       p.loc = { kind: 'cell', idx: cell };
       return;
@@ -344,7 +374,7 @@
     };
     if (x >= trayRect.x && x < trayRect.x + trayRect.w && y >= trayRect.y && y < trayRect.y + trayRect.h) {
       let bi = -1, bd = Infinity;
-      for (let i = 0; i < N; i++) {
+      for (let i = 0; i < L.trayN; i++) {
         const sc = slotCenter(i);
         const dd = (x - sc.x) ** 2 + (y - sc.y) ** 2;
         if (dd < bd) { bd = dd; bi = i; }
@@ -382,12 +412,25 @@
     }
     ctx.globalAlpha = alpha;
     rr(ctx, -h, -h, size, size, size * 0.15);
-    ctx.fillStyle = '#242c3c';
+    ctx.fillStyle = p.locked ? '#1e2531' : '#242c3c';
     ctx.fill();
     ctx.shadowBlur = 0; ctx.shadowOffsetY = 0;
-    ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+    ctx.strokeStyle = p.locked ? 'rgba(140,165,210,0.16)' : 'rgba(255,255,255,0.08)';
     ctx.lineWidth = 1;
     ctx.stroke();
+    if (p.locked) {
+      // 固定ピースの目印: 四隅の留め具
+      ctx.fillStyle = 'rgba(140,165,210,0.28)';
+      const q = size * 0.1;
+      for (const [sx, sy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+        ctx.beginPath();
+        ctx.moveTo(sx * (h - 1), sy * (h - 1 - q));
+        ctx.lineTo(sx * (h - 1), sy * (h - 1));
+        ctx.lineTo(sx * (h - 1 - q), sy * (h - 1));
+        ctx.closePath();
+        ctx.fill();
+      }
+    }
     ctx.globalAlpha = alpha * 0.55;
     ctx.fillStyle = 'rgba(255,255,255,0.16)';
     ctx.beginPath();
@@ -470,7 +513,7 @@
       ctx.fillStyle = 'rgba(255,255,255,0.35)';
       ctx.font = '11px system-ui';
       ctx.fillText('手駒（ドラッグで配置・クリックで回転）', tp.x + 8, tp.y - 6);
-      for (let i = 0; i < N; i++) {
+      for (let i = 0; i < L.trayN; i++) {
         const q = slotCenter(i);
         rr(ctx, q.x - L.st * 0.44, q.y - L.st * 0.44, L.st * 0.88, L.st * 0.88, 8);
         ctx.strokeStyle = 'rgba(255,255,255,0.045)';
@@ -514,7 +557,7 @@
     // 答えパネル
     if (state.peek && state.puzzle) drawPeek();
 
-    // クリア演出
+    // クリア演出: バナーは数秒で消えて、流れる盤面を鑑賞できるようにする
     if (state.cleared) {
       const t = state.time - state.clearedAt;
       const pulse = 0.5 + 0.5 * Math.sin(t * 3);
@@ -522,24 +565,30 @@
       ctx.lineWidth = 3;
       rr(ctx, o.x - 5, o.y - 5, o.w + 10, o.h + 10, 13);
       ctx.stroke();
-      const cx = bx + n * s / 2, cy = by + m * s / 2;
-      ctx.fillStyle = 'rgba(10,13,20,0.72)';
-      rr(ctx, cx - 160, cy - 52, 320, 96, 14);
-      ctx.fill();
-      ctx.textAlign = 'center';
-      ctx.fillStyle = 'rgba(255,220,140,0.98)';
-      ctx.font = `700 ${Math.min(46, s * 0.8)}px system-ui`;
-      ctx.fillText('CLEAR!', cx, cy);
-      ctx.font = '500 13px system-ui';
-      ctx.fillStyle = 'rgba(255,235,190,0.92)';
-      let sub = 'すべての継ぎ目が整合しました';
-      if (state.mode === 'stage') {
-        if (state.solverUsed) sub = 'ソルバー使用のためステージ進行には数えません';
-        else if (state.stageIdx + 1 >= STAGES.length) sub = '全ステージ制覇！';
-        else sub = '次のステージが解放されました';
+      const BANNER_END = 3.2, FADE_START = 2.3;
+      if (t < BANNER_END) {
+        const fade = t < FADE_START ? 1 : 1 - (t - FADE_START) / (BANNER_END - FADE_START);
+        ctx.globalAlpha = fade;
+        const cx = bx + n * s / 2, cy = by + m * s / 2;
+        ctx.fillStyle = 'rgba(10,13,20,0.72)';
+        rr(ctx, cx - 160, cy - 52, 320, 96, 14);
+        ctx.fill();
+        ctx.textAlign = 'center';
+        ctx.fillStyle = 'rgba(255,220,140,0.98)';
+        ctx.font = `700 ${Math.min(46, s * 0.8)}px system-ui`;
+        ctx.fillText('CLEAR!', cx, cy);
+        ctx.font = '500 13px system-ui';
+        ctx.fillStyle = 'rgba(255,235,190,0.92)';
+        let sub = 'すべての継ぎ目が整合しました';
+        if (state.mode === 'stage') {
+          if (state.solverUsed) sub = 'ソルバー使用のためステージ進行には数えません';
+          else if (state.stageIdx + 1 >= STAGES.length) sub = '全ステージ制覇！';
+          else sub = '次のステージが解放されました';
+        }
+        ctx.fillText(sub, cx, cy + 26);
+        ctx.textAlign = 'start';
+        ctx.globalAlpha = 1;
       }
-      ctx.fillText(sub, cx, cy + 26);
-      ctx.textAlign = 'start';
     }
 
     if (state.generating) {

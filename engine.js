@@ -86,7 +86,9 @@
   }
 
   // ---------- solver / 解の数え上げ ----------
-  // opts: { maxCount, nodeCap, anchor }  anchor=null で固定なし（既定はピース0を固定）
+  // opts: { maxCount, nodeCap, anchor, fixed }
+  //   anchor: ピース番号（セル0・回転0に固定。null で固定なし。既定はピース0）
+  //   fixed:  [{cell, piece, rot}, ...] 任意セルの事前固定（指定時は anchor より優先）
   // 割当て（どのピース実体を・どのセルに・どの回転で）を厳密に数える。
   // nodes は「配置に成功した回数」でカウントし nodeCap で打ち切る（capped=true）。
   function countSolutions(pieces, m, n, opts) {
@@ -127,25 +129,39 @@
       fN[cell] = f[0]; fE[cell] = f[1]; fS[cell] = f[2]; fW[cell] = f[3];
     }
 
-    let start = 0;
-    if (anchor != null && anchor >= 0) {
-      setCell(0, anchor, 0, facingTuple(pieces[anchor], 0));
-      start = 1;
+    const fixed = opts.fixed ||
+      ((anchor != null && anchor >= 0) ? [{ cell: 0, piece: anchor, rot: 0 }] : []);
+    for (const fx of fixed) {
+      setCell(fx.cell, fx.piece, ((fx.rot % 4) + 4) % 4,
+        facingTuple(pieces[fx.piece], ((fx.rot % 4) + 4) % 4));
+    }
+    // 事前固定どうしの整合を確認（不整合なら解は 0）
+    let fixedOk = true;
+    for (const fx of fixed) {
+      const cell = fx.cell, r = (cell / n) | 0, c = cell - r * n;
+      const e = r * n + ((c + 1) % n), s = ((r + 1) % m) * n + c;
+      if (gp[e] !== -1 && !matches(fE[cell], fW[e])) fixedOk = false;
+      if (gp[s] !== -1 && !matches(fS[cell], fN[s])) fixedOk = false;
     }
 
     function rec(cell) {
+      while (cell < N && gp[cell] !== -1) cell++;
       if (cell === N) {
         count++;
         if (solutions.length < maxCount) solutions.push({ gp: gp.slice(), gr: gr.slice() });
         return;
       }
       const r = (cell / n) | 0, c = cell - r * n;
-      // 既に置かれた隣（西・北）および wrap 相手（東端→(r,0)、南端→(0,c)）からの要求値。
+      // 置かれている隣接セル（トーラスなので4方向すべて wrap あり）からの要求値。
       // 「なし」(0) も具体的な要求なので、番兵は -1。
-      const reqW = c > 0 ? partner(fE[cell - 1]) : -1;
-      const reqN = r > 0 ? partner(fS[cell - n]) : -1;
-      const reqE = c === n - 1 ? partner(fW[cell - n + 1]) : -1;
-      const reqS = r === m - 1 ? partner(fN[c]) : -1;
+      const wIdx = c > 0 ? cell - 1 : cell + n - 1;
+      const nIdx = r > 0 ? cell - n : cell + (m - 1) * n;
+      const eIdx = c < n - 1 ? cell + 1 : cell - n + 1;
+      const sIdx = r < m - 1 ? cell + n : c;
+      const reqW = gp[wIdx] !== -1 ? partner(fE[wIdx]) : -1;
+      const reqN = gp[nIdx] !== -1 ? partner(fS[nIdx]) : -1;
+      const reqE = gp[eIdx] !== -1 ? partner(fW[eIdx]) : -1;
+      const reqS = gp[sIdx] !== -1 ? partner(fN[sIdx]) : -1;
       let list;
       if (reqW >= 0 && reqN >= 0) list = byWN[reqW * S + reqN];
       else if (reqW >= 0) list = byW[reqW];
@@ -164,7 +180,7 @@
         if (capped || count >= maxCount) return;
       }
     }
-    rec(start);
+    if (fixedOk) rec(0);
     return { count, completed: !capped, nodes, solutions };
   }
 
@@ -187,6 +203,33 @@
       }
     }
     return bad;
+  }
+
+  // 手作り盤面（H/V を直接指定）からパズルを作る。
+  // d: { m, n, K, H, V, locked: [cell...] }
+  // locked セルは intended のピースを回転0で事前固定した上で、残りの
+  // 「配置＋向き」がちょうど1通りかを全探索で検証する（locked が空なら anchor 方式）。
+  function puzzleFromDesign(d) {
+    const m = d.m, n = d.n;
+    const pieces = buildPieces(m, n, d.H, d.V);
+    const locked = d.locked || [];
+    const opts = { maxCount: 2, nodeCap: d.nodeCap || 2000000 };
+    if (locked.length) opts.fixed = locked.map((cell) => ({ cell, piece: cell, rot: 0 }));
+    const res = countSolutions(pieces, m, n, opts);
+    let blank = 0;
+    for (let r = 0; r < m; r++) {
+      for (let c = 0; c < n; c++) { if (d.H[r][c] === 0) blank++; if (d.V[r][c] === 0) blank++; }
+    }
+    return {
+      m, n, K: d.K, seed: d.seed || 0, H: d.H, V: d.V, pieces,
+      locked: locked.slice(),
+      stats: {
+        blankSeams: blank, totalSeams: 2 * m * n,
+        unique: res.completed && res.count === 1,
+        designed: true, verifyNodes: res.nodes,
+        baseAttempts: 0, carveChecks: 0, removed: 0, locallyMinimal: false, ms: 0,
+      },
+    };
   }
 
   // ---------- 生成器 ----------
@@ -281,7 +324,7 @@
     edgeColor, edgeDir, partner, matches,
     facingTuple, pieceVariants, canonKey, defaultK,
     buildPieces, countSolutions, checkBoard,
-    generateSteps, generateSync,
+    puzzleFromDesign, generateSteps, generateSync,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   global.TorusEngine = api;

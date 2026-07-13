@@ -46,6 +46,26 @@ console.log('== 割当て単位の厳密カウント ==');
   ok(res.count >= 2, `同一ピースの swap は別解として検出 (count=${res.count})`);
 }
 
+console.log('== 事前固定（fixed）つきの数え上げ ==');
+{
+  // 全空白盤で 8/9 を固定しても、残り1枚の向きが区別できず 4 解 → 非一意
+  const pieces = Array.from({ length: 9 }, () => [0, 0, 0, 0]);
+  const fixed = Array.from({ length: 8 }, (_, i) => ({ cell: i, piece: i, rot: 0 }));
+  const res = E.countSolutions(pieces, 3, 3, { fixed, maxCount: 5, nodeCap: 1e6 });
+  ok(res.completed && res.count === 4, `空白ピースの残り1枚は回転4通りが全部解 (count=${res.count})`);
+}
+{
+  // 互いに矛盾する固定 → 解は 0
+  const puz = E.generateSync(3, 3, 3, 4242, { maxRemove: 0 });
+  const wrongRot = E.pieceVariants(puz.pieces[1])[1].rot; // facing が変わる回転を選ぶ
+  const fixed = [
+    { cell: 0, piece: 0, rot: 0 },
+    { cell: 1, piece: 1, rot: wrongRot }, // わざと回転をずらす
+  ];
+  const res = E.countSolutions(puz.pieces, 3, 3, { fixed, maxCount: 2, nodeCap: 1e6 });
+  ok(res.completed && res.count === 0, `矛盾した固定は解なしと判定 (count=${res.count})`);
+}
+
 console.log('== 生成器（各サイズ） ==');
 const sizes = [[2, 4], [3, 3], [4, 4], [3, 5], [5, 5], [6, 6]];
 for (const [m, n] of sizes) {
@@ -136,25 +156,37 @@ for (const [m, n] of sizes) {
   }
 }
 
-console.log('== ステージ（固定シード） ==');
+console.log('== ステージ（手作り面 + 固定シード生成） ==');
 const STAGES = require('./stages.js');
 for (let i = 0; i < STAGES.length; i++) {
   const st = STAGES[i];
-  const t0 = Date.now();
-  const puz = E.generateSync(st.m, st.n, st.K, st.seed, st.gen);
-  const ms = Date.now() - t0;
-  ok(puz.stats.unique,
-    `Stage${i + 1}「${st.title}」${st.m}×${st.n} K${st.K}: 一意 (空白 ${puz.stats.blankSeams}/${puz.stats.totalSeams}, ${ms}ms)`);
-  if (st.gen && st.gen.maxRemove !== undefined) {
-    ok(puz.stats.blankSeams <= st.gen.maxRemove, `Stage${i + 1}: 削り上限 (${st.gen.maxRemove}) 遵守`);
+  let puz;
+  if (st.type === 'design') {
+    puz = E.puzzleFromDesign(st);
+    ok(puz.stats.unique,
+      `Stage${i + 1}「${st.title}」design ${st.m}×${st.n}: 固定 ${st.locked.length} 枚のもとで完成は一意`);
+    // 自由ピースは回転が意味を持つ（4回転の facing が全部違う）こと
+    const free = [];
+    for (let c = 0; c < st.m * st.n; c++) if (!st.locked.includes(c)) free.push(c);
+    ok(free.every((c) => E.pieceVariants(puz.pieces[c]).length === 4),
+      `Stage${i + 1}: 自由ピース ${free.length} 枚すべて回転が有意味`);
+  } else {
+    const t0 = Date.now();
+    puz = E.generateSync(st.m, st.n, st.K, st.seed, st.gen);
+    const ms = Date.now() - t0;
+    ok(puz.stats.unique,
+      `Stage${i + 1}「${st.title}」gen ${st.m}×${st.n} K${st.K}: 一意 (空白 ${puz.stats.blankSeams}/${puz.stats.totalSeams}, ${ms}ms)`);
+    if (st.gen && st.gen.maxRemove !== undefined) {
+      ok(puz.stats.blankSeams <= st.gen.maxRemove, `Stage${i + 1}: 削り上限 (${st.gen.maxRemove}) 遵守`);
+    }
+    const puz2 = E.generateSync(st.m, st.n, st.K, st.seed, st.gen);
+    ok(JSON.stringify(puz.H) === JSON.stringify(puz2.H) && JSON.stringify(puz.V) === JSON.stringify(puz2.V),
+      `Stage${i + 1}: 同シードで決定的`);
   }
   const N = st.m * st.n;
   const gp = Array.from({ length: N }, (_, j) => j);
   const gr = new Array(N).fill(0);
   ok(E.checkBoard(puz.pieces, st.m, st.n, gp, gr).length === 0, `Stage${i + 1}: intended 解は全 seam 整合`);
-  const puz2 = E.generateSync(st.m, st.n, st.K, st.seed, st.gen);
-  ok(JSON.stringify(puz.H) === JSON.stringify(puz2.H) && JSON.stringify(puz.V) === JSON.stringify(puz2.V),
-    `Stage${i + 1}: 同シードで決定的`);
 }
 
 console.log(fails ? `\n${fails} 件の失敗` : '\n全テスト成功');
