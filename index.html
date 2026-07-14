@@ -50,6 +50,17 @@
     font-size: 12.5px; line-height: 1.75; color: #b9c4d8; box-shadow: 0 8px 30px rgba(0,0,0,.5);
   }
   details b { color: #dce3f0; }
+  #inkbar { display: inline-flex; align-items: center; gap: 4px; padding: 2px 6px;
+    border: 1px solid #2a3448; border-radius: 8px; background: #171d2a; }
+  #inkbar button.tool, #inkbar #inkClear {
+    padding: 3px 7px; border: 1px solid transparent; background: transparent; border-radius: 6px;
+  }
+  #inkbar button.tool.active { background: #2f3c58; border-color: #4a5f8c; }
+  #inkbar button.swatch {
+    width: 18px; height: 18px; padding: 0; border-radius: 50%;
+    border: 2px solid rgba(255,255,255,0.15);
+  }
+  #inkbar button.swatch.active { border-color: #fff; box-shadow: 0 0 6px rgba(255,255,255,0.4); }
   #cv { display: block; width: 100vw; flex: 1; min-height: 0; touch-action: none; }
 </style>
 </head>
@@ -76,6 +87,16 @@
   <button id="resetBtn">並べ直す</button>
   <button id="peekBtn">答え</button>
   <button id="solveBtn">ソルバーで解く</button>
+  <span id="inkbar">
+    <button id="toolMove" class="tool active" title="操作（ピースを動かす）">🖐</button>
+    <button id="toolPen" class="tool" title="ペン（Shift+ドラッグでも描ける）">✏️</button>
+    <button id="toolErase" class="tool" title="消しゴム（Alt+ドラッグでも消せる）">🧽</button>
+    <button class="swatch active" data-color="#f2f5ff" style="background:#f2f5ff" title="白"></button>
+    <button class="swatch" data-color="#ff6a6a" style="background:#ff6a6a" title="赤"></button>
+    <button class="swatch" data-color="#ffe66d" style="background:#ffe66d" title="黄"></button>
+    <button class="swatch" data-color="#4fc3ff" style="background:#4fc3ff" title="青"></button>
+    <button id="inkClear" title="書き込みを全部消す">🗑</button>
+  </span>
   <details>
     <summary>遊び方</summary>
     <div>
@@ -84,7 +105,10 @@
       色付きの点は「自分の中心 ↔ 隣のタイルの中心」を往復しようとしますが、自分のタイルの中でしか見えません。
       隣が正しければ、継ぎ目の向こうで<b>相手の点が続きを引き継ぎ</b>、1つの点が行き来しているように見えます。
       点が継ぎ目で消えたまま帰らない・ぶつかって消える・色が変わるなら、その継ぎ目は間違い。<br>
-      すべての継ぎ目（回り込み含む）が整合したらクリア。<b>盤全体の平行移動・回転も正解</b>扱いです。
+      すべての継ぎ目（回り込み含む）が整合したらクリア。<b>盤全体の平行移動・回転も正解</b>扱いです。<br>
+      <b>✏️ペン</b>で盤やピースに自由に書き込めます（思考メモ用）。ピースの上から書き始めた線は
+      そのピースに付いて、移動・回転にも一緒についていきます。<b>Shift+ドラッグ</b>でいつでもペン、
+      <b>Alt+ドラッグ</b>で消しゴム、🗑で全消去。書き込みはクリア判定に影響しません。
     </div>
   </details>
   <span id="status"></span>

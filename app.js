@@ -13,6 +13,9 @@
   const stageBar = $('stagebar');
   const stagePrevBtn = $('stagePrev'), stageNextBtn = $('stageNext');
   const stageLabel = $('stageLabel'), lessonEl = $('lesson'), nextStageBtn = $('nextStageBtn');
+  const toolMoveBtn = $('toolMove'), toolPenBtn = $('toolPen'), toolEraseBtn = $('toolErase');
+  const inkClearBtn = $('inkClear');
+  const swatchBtns = Array.from(document.querySelectorAll('#inkbar .swatch'));
 
   const PALETTE = ['#ff5d5d', '#ffb020', '#3ddc84', '#41b0ff', '#b18cff', '#ff6ad5', '#ffe66d', '#2de1c2'];
   const DIR = [[0, -1], [1, 0], [0, 1], [-1, 0]]; // N,E,S,W（ローカル）
@@ -37,6 +40,12 @@
     drag: null,
     time: 0,
     trayN: null, // トレイのスロット数（= 固定されていないピースの数）
+    // お絵描き（思考メモ）
+    tool: 'move',            // 'move' | 'pen' | 'erase'
+    inkColor: '#f2f5ff',
+    globalInk: [],           // 盤座標系のストローク {color, w, pts:[{x,y}]}
+    inkStroke: null,         // 描画中: {kind:'global'|'piece', p?, stroke, lastX, lastY}
+    erasing: false,
   };
   function unlocked() {
     const v = parseInt(lsGet(LS.unlocked, '0'), 10);
@@ -196,7 +205,7 @@
       id: i, edges, rot: 0, dispRot: 0,
       locked: lockedSet.has(i),
       loc: lockedSet.has(i) ? { kind: 'cell', idx: i } : { kind: 'tray', idx: i },
-      x: 0, y: 0, size: 10,
+      x: 0, y: 0, size: 10, ink: [],
     }));
     state.trayN = state.pieces.length - lockedSet.size;
     scatterToTray(E.mulberry32(scrambleSeed >>> 0));
@@ -223,6 +232,9 @@
     state.pieces = [];
     state.puzzle = null;
     state.trayN = null;
+    state.globalInk = [];
+    state.inkStroke = null;
+    state.erasing = false;
     let seed, genOpts;
     if (state.mode === 'stage') {
       const stg = STAGES[state.stageIdx];
@@ -308,32 +320,115 @@
     }, 30);
   }
 
+  // ---------- お絵描き（思考メモ） ----------
+  // 画面インクは盤座標（セル単位）、ピースインクはピースのローカル座標
+  // （回転打ち消し + サイズ正規化）で持つ。どちらも移動・リサイズに追従する。
+  function toBoardPt(x, y) {
+    return { x: (x - L.bx) / L.s, y: (y - L.by) / L.s };
+  }
+  function toPieceLocal(p, x, y) {
+    const dx = x - p.x, dy = y - p.y;
+    const a = -p.dispRot * Math.PI / 2;
+    const cos = Math.cos(a), sin = Math.sin(a);
+    return { x: (dx * cos - dy * sin) / p.size, y: (dx * sin + dy * cos) / p.size };
+  }
+  function distToSeg(px, py, ax, ay, bx, by) {
+    const dx = bx - ax, dy = by - ay;
+    const l2 = dx * dx + dy * dy;
+    let t = l2 ? ((px - ax) * dx + (py - ay) * dy) / l2 : 0;
+    t = Math.max(0, Math.min(1, t));
+    return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+  }
+  function strokeHit(s, pt, r) {
+    const p = s.pts;
+    if (p.length === 1) return Math.hypot(pt.x - p[0].x, pt.y - p[0].y) <= r;
+    for (let i = 1; i < p.length; i++) {
+      if (distToSeg(pt.x, pt.y, p[i - 1].x, p[i - 1].y, p[i].x, p[i].y) <= r) return true;
+    }
+    return false;
+  }
+  function startInk(x, y) {
+    const p = pieceAt(x, y, true); // 固定ピースにも書ける
+    if (p) {
+      const stroke = { color: state.inkColor, w: 0.05, pts: [toPieceLocal(p, x, y)] };
+      p.ink.push(stroke);
+      state.inkStroke = { kind: 'piece', p, stroke, lastX: x, lastY: y };
+    } else {
+      const stroke = { color: state.inkColor, w: 0.045, pts: [toBoardPt(x, y)] };
+      state.globalInk.push(stroke);
+      state.inkStroke = { kind: 'global', stroke, lastX: x, lastY: y };
+    }
+  }
+  function addInkPoint(x, y) {
+    const st = state.inkStroke;
+    if (!st) return;
+    if (Math.hypot(x - st.lastX, y - st.lastY) < 2) return; // 間引き
+    st.lastX = x; st.lastY = y;
+    st.stroke.pts.push(st.kind === 'piece' ? toPieceLocal(st.p, x, y) : toBoardPt(x, y));
+  }
+  function eraseAt(x, y) {
+    const R = 12; // 画面ピクセルでの消しゴム半径
+    const bp = toBoardPt(x, y);
+    state.globalInk = state.globalInk.filter((s) => !strokeHit(s, bp, R / L.s));
+    for (const p of state.pieces) {
+      if (!p.ink || !p.ink.length) continue;
+      const lp = toPieceLocal(p, x, y);
+      p.ink = p.ink.filter((s) => !strokeHit(s, lp, R / p.size));
+    }
+  }
+  function clearAllInk() {
+    state.globalInk = [];
+    for (const p of state.pieces) p.ink = [];
+  }
+  function setTool(tool) {
+    state.tool = tool;
+    toolMoveBtn.classList.toggle('active', tool === 'move');
+    toolPenBtn.classList.toggle('active', tool === 'pen');
+    toolEraseBtn.classList.toggle('active', tool === 'erase');
+    cv.style.cursor = tool === 'move' ? '' : 'crosshair';
+  }
+
   // ---------- 入力 ----------
   function toCanvas(e) {
     const r = cv.getBoundingClientRect();
     return { x: e.clientX - r.left, y: e.clientY - r.top };
   }
-  function pieceAt(x, y) {
+  function pieceAt(x, y, includeLocked) {
     let best = null;
     for (const p of state.pieces) {
-      if (p.locked) continue;
+      if (p.locked && !includeLocked) continue;
       const h = p.size / 2;
       if (Math.abs(x - p.x) <= h && Math.abs(y - p.y) <= h) best = p;
     }
     return best;
   }
   cv.addEventListener('pointerdown', (e) => {
-    if (state.generating || state.solving || state.cleared || !state.puzzle) return;
+    if (state.generating || state.solving || !state.puzzle) return;
     const { x, y } = toCanvas(e);
+    // お絵描きはクリア後も可（鑑賞しながらメモできる）
+    if (state.tool === 'erase' || e.altKey) {
+      state.erasing = true;
+      eraseAt(x, y);
+      try { cv.setPointerCapture(e.pointerId); } catch (_) { /* noop */ }
+      return;
+    }
+    if (state.tool === 'pen' || e.shiftKey) {
+      startInk(x, y);
+      try { cv.setPointerCapture(e.pointerId); } catch (_) { /* noop */ }
+      return;
+    }
+    if (state.cleared) return;
     const p = pieceAt(x, y);
     if (!p) return;
     state.drag = { p, from: { ...p.loc }, sx: x, sy: y, moved: false, dx: p.x - x, dy: p.y - y };
     try { cv.setPointerCapture(e.pointerId); } catch (_) { /* 合成イベント等では失敗してよい */ }
   });
   cv.addEventListener('pointermove', (e) => {
+    const { x, y } = toCanvas(e);
+    if (state.inkStroke) { addInkPoint(x, y); return; }
+    if (state.erasing) { eraseAt(x, y); return; }
     const d = state.drag;
     if (!d) return;
-    const { x, y } = toCanvas(e);
     if (!d.moved && Math.hypot(x - d.sx, y - d.sy) > 7) {
       d.moved = true;
       d.p.loc = { kind: 'drag' };
@@ -341,6 +436,8 @@
     if (d.moved) { d.p.x = x + d.dx; d.p.y = y + d.dy; }
   });
   function endDrag(e, cancelled) {
+    if (state.inkStroke) { state.inkStroke = null; return; }
+    if (state.erasing) { state.erasing = false; return; }
     const d = state.drag;
     if (!d) return;
     state.drag = null;
@@ -469,6 +566,61 @@
     ctx.globalAlpha = 1;
   }
 
+  // ピースに付いた書き込み（ローカル座標 → ピースと一緒に移動・回転・伸縮）
+  function drawPieceInk(x, y, size, p, alpha) {
+    if (!p.ink || !p.ink.length) return;
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(p.dispRot * Math.PI / 2);
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.globalAlpha = alpha * 0.9;
+    for (const s of p.ink) {
+      ctx.strokeStyle = s.color;
+      ctx.fillStyle = s.color;
+      ctx.lineWidth = Math.max(2, s.w * size);
+      const pts = s.pts;
+      if (pts.length === 1) {
+        ctx.beginPath();
+        ctx.arc(pts[0].x * size, pts[0].y * size, Math.max(1.5, s.w * size * 0.6), 0, 7);
+        ctx.fill();
+        continue;
+      }
+      ctx.beginPath();
+      ctx.moveTo(pts[0].x * size, pts[0].y * size);
+      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x * size, pts[i].y * size);
+      ctx.stroke();
+    }
+    ctx.restore();
+    ctx.globalAlpha = 1;
+  }
+  // 盤に描いた書き込み（盤座標 → リサイズしてもセルに張り付く）
+  function drawGlobalInk() {
+    if (!state.globalInk.length) return;
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.globalAlpha = 0.9;
+    for (const s of state.globalInk) {
+      ctx.strokeStyle = s.color;
+      ctx.fillStyle = s.color;
+      ctx.lineWidth = Math.max(2, s.w * L.s);
+      const pts = s.pts;
+      if (pts.length === 1) {
+        ctx.beginPath();
+        ctx.arc(L.bx + pts[0].x * L.s, L.by + pts[0].y * L.s, Math.max(1.5, s.w * L.s * 0.6), 0, 7);
+        ctx.fill();
+        continue;
+      }
+      ctx.beginPath();
+      ctx.moveTo(L.bx + pts[0].x * L.s, L.by + pts[0].y * L.s);
+      for (let i = 1; i < pts.length; i++) ctx.lineTo(L.bx + pts[i].x * L.s, L.by + pts[i].y * L.s);
+      ctx.stroke();
+    }
+    ctx.restore();
+    ctx.globalAlpha = 1;
+  }
+
   function draw() {
     const W = L.W, H = L.H, s = L.s, bx = L.bx, by = L.by;
     const m = state.m, n = state.n, N = m * n;
@@ -541,6 +693,7 @@
     }
     for (const g of ghosts) drawPieceBody(g.gx, g.gy, g.p.size, g.p, 0.35, false);
     for (const g of ghosts) drawPieceDots(g.gx, g.gy, g.p.size, s, g.p, 0.35, false);
+    for (const g of ghosts) drawPieceInk(g.gx, g.gy, g.p.size, g.p, 0.35);
     ctx.restore();
 
     // ピース: 全部の盤を描いてから全部の点を重ねる
@@ -549,9 +702,13 @@
     for (const p of state.pieces) (p.loc.kind === 'drag' ? drag : still).push(p);
     for (const p of still) drawPieceBody(p.x, p.y, p.size, p, 1, false);
     for (const p of still) drawPieceDots(p.x, p.y, p.size, pitchOf(p), p, 1, true);
+    for (const p of still) drawPieceInk(p.x, p.y, p.size, p, 1);
+    // 盤への書き込みは静止ピースの上・ドラッグ中ピースの下
+    drawGlobalInk();
     for (const p of drag) {
       drawPieceBody(p.x, p.y, p.size, p, 1, true);
       drawPieceDots(p.x, p.y, p.size, pitchOf(p), p, 1, true);
+      drawPieceInk(p.x, p.y, p.size, p, 1);
     }
 
     // 答えパネル
@@ -690,6 +847,17 @@
     peekBtn.textContent = state.peek ? '答えを隠す' : '答え';
   });
   solveBtn.addEventListener('click', runSolver);
+  toolMoveBtn.addEventListener('click', () => setTool('move'));
+  toolPenBtn.addEventListener('click', () => setTool('pen'));
+  toolEraseBtn.addEventListener('click', () => setTool('erase'));
+  for (const b of swatchBtns) {
+    b.addEventListener('click', () => {
+      state.inkColor = b.dataset.color;
+      for (const o of swatchBtns) o.classList.toggle('active', o === b);
+      setTool('pen'); // 色を選んだらそのまま描けるように
+    });
+  }
+  inkClearBtn.addEventListener('click', clearAllInk);
 
   // デバッグ / 自動テスト用フック
   window.__torus = {
@@ -698,7 +866,7 @@
     cellCenter, slotCenter,
     pieceInCell, pieceInSlot,
     checkCleared, gotoStage,
-    unlocked,
+    unlocked, setTool, clearAllInk,
   };
 
   updateModeUI();
