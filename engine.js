@@ -184,6 +184,68 @@
     return { count, completed: !capped, nodes, solutions };
   }
 
+  // 「無推測で解けるか」判定（パズルとしての手触りの指標）。
+  // fixed（既定は anchor=piece0 をセル0）を初期配置とし、毎ステップ
+  // 「置かれた隣接からの制約で候補(piece,rot)がちょうど1つに定まる空きセル」を
+  // 探して確定していく。全セル埋まれば solved=true（＝forced move だけで解ける）。
+  // 一意解パズルでは locally-forced な確定は必ず本解の一部なので安全かつ順序非依存。
+  // どのセルも2候補以上なら stuck（推測が必要）。
+  function forcedSolvable(pieces, m, n, opts) {
+    opts = opts || {};
+    const N = m * n;
+    const fixed = opts.fixed || [{ cell: 0, piece: 0, rot: 0 }];
+    const facings = pieces.map(function (e) {
+      return [facingTuple(e, 0), facingTuple(e, 1), facingTuple(e, 2), facingTuple(e, 3)];
+    });
+    const used = new Array(N).fill(false);
+    const gp = new Array(N).fill(-1);
+    const face = new Array(N).fill(null);
+    function place(cell, pi, rot) {
+      used[pi] = true; gp[cell] = pi; face[cell] = facings[pi][rot];
+    }
+    for (const fx of fixed) place(fx.cell, fx.piece, ((fx.rot % 4) + 4) % 4);
+    let placed = fixed.length, steps = 0, maxBranch = 1;
+    while (placed < N) {
+      let bestCell = -1, bestPi = -1, bestRot = 0, deadEnd = false;
+      let cellMin = Infinity; // このステップで見た「最小候補数」（stuck の目安）
+      for (let cell = 0; cell < N && bestCell < 0; cell++) {
+        if (gp[cell] !== -1) continue;
+        const r = (cell / n) | 0, c = cell - r * n;
+        const wIdx = c > 0 ? cell - 1 : cell + n - 1;
+        const nIdx = r > 0 ? cell - n : cell + (m - 1) * n;
+        const eIdx = c < n - 1 ? cell + 1 : cell - n + 1;
+        const sIdx = r < m - 1 ? cell + n : c;
+        const reqW = gp[wIdx] !== -1 ? partner(face[wIdx][1]) : -1;
+        const reqN = gp[nIdx] !== -1 ? partner(face[nIdx][2]) : -1;
+        const reqE = gp[eIdx] !== -1 ? partner(face[eIdx][3]) : -1;
+        const reqS = gp[sIdx] !== -1 ? partner(face[sIdx][0]) : -1;
+        if (reqW < 0 && reqN < 0 && reqE < 0 && reqS < 0) continue; // 制約なしのセルは飛ばす
+        let cnt = 0, pi1 = -1, rot1 = 0;
+        for (let pi = 0; pi < N && cnt < 2; pi++) {
+          if (used[pi]) continue;
+          const fr = facings[pi];
+          for (let rot = 0; rot < 4; rot++) {
+            const f = fr[rot];
+            if (reqW >= 0 && f[3] !== reqW) continue;
+            if (reqN >= 0 && f[0] !== reqN) continue;
+            if (reqE >= 0 && f[1] !== reqE) continue;
+            if (reqS >= 0 && f[2] !== reqS) continue;
+            cnt++; if (cnt === 1) { pi1 = pi; rot1 = rot; } else break;
+          }
+        }
+        if (cnt < cellMin) cellMin = cnt;
+        if (cnt === 0) { deadEnd = true; break; }
+        if (cnt === 1) { bestCell = cell; bestPi = pi1; bestRot = rot1; }
+      }
+      if (deadEnd) return { solved: false, steps, reason: 'deadend' };
+      if (bestCell < 0) return { solved: false, steps, stuckBranch: cellMin };
+      place(bestCell, bestPi, bestRot);
+      placed++; steps++;
+      if (cellMin > maxBranch) maxBranch = cellMin;
+    }
+    return { solved: true, steps, maxBranch };
+  }
+
   // 任意の配置の整合チェック。gp[cell]=ピース番号(-1で空), gr[cell]=回転。
   // 両側が埋まっている seam のうち不整合なものを返す。
   function checkBoard(pieces, m, n, gp, gr) {
@@ -214,8 +276,10 @@
     const pieces = buildPieces(m, n, d.H, d.V);
     const locked = d.locked || [];
     const opts = { maxCount: 2, nodeCap: d.nodeCap || 2000000 };
-    if (locked.length) opts.fixed = locked.map((cell) => ({ cell, piece: cell, rot: 0 }));
+    const fixed = locked.length ? locked.map((cell) => ({ cell, piece: cell, rot: 0 })) : null;
+    if (fixed) opts.fixed = fixed;
     const res = countSolutions(pieces, m, n, opts);
+    const fs = forcedSolvable(pieces, m, n, fixed ? { fixed } : undefined);
     let blank = 0;
     for (let r = 0; r < m; r++) {
       for (let c = 0; c < n; c++) { if (d.H[r][c] === 0) blank++; if (d.V[r][c] === 0) blank++; }
@@ -226,7 +290,7 @@
       stats: {
         blankSeams: blank, totalSeams: 2 * m * n,
         unique: res.completed && res.count === 1,
-        designed: true, verifyNodes: res.nodes,
+        noGuess: fs.solved, designed: true, verifyNodes: res.nodes,
         baseAttempts: 0, carveChecks: 0, removed: 0, locallyMinimal: false, ms: 0,
       },
     };
@@ -295,6 +359,7 @@
 
     pieces = buildPieces(m, n, H, V);
     const verify = countSolutions(pieces, m, n, { maxCount: 2, nodeCap: nodeCap * 4 });
+    const fs = forcedSolvable(pieces, m, n);
     let blank = 0;
     for (let r = 0; r < m; r++) {
       for (let c = 0; c < n; c++) { if (H[r][c] === 0) blank++; if (V[r][c] === 0) blank++; }
@@ -305,6 +370,7 @@
         blankSeams: blank, totalSeams: 2 * m * n,
         baseAttempts, carveChecks, removed,
         unique: verify.completed && verify.count === 1,
+        noGuess: fs.solved,
         locallyMinimal: converged,
         verifyNodes: verify.nodes,
         ms: Date.now() - t0,
@@ -323,7 +389,7 @@
     NONE, mulberry32, shuffle,
     edgeColor, edgeDir, partner, matches,
     facingTuple, pieceVariants, canonKey, defaultK,
-    buildPieces, countSolutions, checkBoard,
+    buildPieces, countSolutions, forcedSolvable, checkBoard,
     puzzleFromDesign, generateSteps, generateSync,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

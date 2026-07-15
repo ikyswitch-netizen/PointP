@@ -20,7 +20,7 @@
   const PALETTE = ['#ff5d5d', '#ffb020', '#3ddc84', '#41b0ff', '#b18cff', '#ff6ad5', '#ffe66d', '#2de1c2'];
   const DIR = [[0, -1], [1, 0], [0, 1], [-1, 0]]; // N,E,S,W（ローカル）
   const PERIOD = 3.0; // 中心→隣の中心→中心 の1往復（秒）
-  const LS = { mode: 'torusloops.mode', stage: 'torusloops.stage.v2', unlocked: 'torusloops.unlocked.v2' };
+  const LS = { mode: 'torusloops.mode', stage: 'torusloops.stage.v3', unlocked: 'torusloops.unlocked.v3' };
 
   function lsGet(k, def) { try { const v = localStorage.getItem(k); return v === null ? def : v; } catch (_) { return def; } }
   function lsSet(k, v) { try { localStorage.setItem(k, String(v)); } catch (_) { /* ignore */ } }

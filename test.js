@@ -66,6 +66,22 @@ console.log('== 事前固定（fixed）つきの数え上げ ==');
   ok(res.completed && res.count === 0, `矛盾した固定は解なしと判定 (count=${res.count})`);
 }
 
+console.log('== 無推測判定（forcedSolvable） ==');
+{
+  // 全空白盤: どのピースも見分けられず forced move が作れない → 解けない扱い
+  const pieces = Array.from({ length: 9 }, () => [0, 0, 0, 0]);
+  const fs = E.forcedSolvable(pieces, 3, 3);
+  ok(!fs.solved, `全空白盤は無推測では解けない (solved=${fs.solved})`);
+}
+{
+  // 手作り面（Stage 5 相当）: 固定込みで forced move だけで解ける
+  const H = [[3, 6, 3], [3, 2, 2], [2, 4, 2]], V = [[1, 5, 3], [3, 1, 1], [5, 1, 1]];
+  const pieces = E.buildPieces(3, 3, H, V);
+  const fixed = [0, 1, 2].map((cell) => ({ cell, piece: cell, rot: 0 }));
+  const fs = E.forcedSolvable(pieces, 3, 3, { fixed });
+  ok(fs.solved && fs.steps === 6, `Stage5盤は無推測で解ける (solved=${fs.solved}, steps=${fs.steps})`);
+}
+
 console.log('== 生成器（各サイズ） ==');
 const sizes = [[2, 4], [3, 3], [4, 4], [3, 5], [5, 5], [6, 6]];
 for (const [m, n] of sizes) {
@@ -187,6 +203,9 @@ for (let i = 0; i < STAGES.length; i++) {
   const gp = Array.from({ length: N }, (_, j) => j);
   const gr = new Array(N).fill(0);
   ok(E.checkBoard(puz.pieces, st.m, st.n, gp, gr).length === 0, `Stage${i + 1}: intended 解は全 seam 整合`);
+  if (st.expectNoGuess) {
+    ok(puz.stats.noGuess === true, `Stage${i + 1}: 宣言どおり無推測で解ける (noGuess=${puz.stats.noGuess})`);
+  }
 }
 
 console.log(fails ? `\n${fails} 件の失敗` : '\n全テスト成功');
